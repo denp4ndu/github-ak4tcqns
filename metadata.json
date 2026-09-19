@@ -1,0 +1,6 @@
+{
+  "name": "ESP32 IoT Monitor",
+  "description": "ESP32 IoT Monitoring Platform with REST API ingestion, PostgreSQL persistence, two-way WebSocket closed-loop relay control, dynamic drag-and-drop dashboard builder, and multi-device management.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}

@@ -1,0 +1,171 @@
+// This is your Prisma schema file,
+// learn more about it in the docs: https://pris.ly/d/prisma-schema
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+model User {
+  id           String    @id @default(uuid())
+  email        String    @unique
+  passwordHash String
+  createdAt    DateTime  @default(now())
+  updatedAt    DateTime  @updatedAt
+  projects     Project[]
+
+  @@map("users")
+}
+
+model Project {
+  id          String    @id @default(uuid())
+  userId      String
+  name        String
+  description String?
+  createdAt   DateTime  @default(now())
+  updatedAt   DateTime  @updatedAt
+  user        User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  devices     Device[]
+
+  @@index([userId])
+  @@map("projects")
+}
+
+model Device {
+  id               String       @id @default(uuid())
+  projectId        String
+  name             String
+  deviceIdentifier String       @unique
+  tokenHash        String       @unique
+  lastSeen         DateTime?
+  createdAt        DateTime     @default(now())
+  updatedAt        DateTime     @updatedAt
+  project          Project      @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  datastreams      Datastream[]
+  sensorData       SensorData[]
+  widgets          Widget[]
+  automationRules  AutomationRule[]
+  notifications    Notification[]
+
+  @@index([projectId])
+  @@index([tokenHash])
+  @@map("devices")
+}
+
+enum DataType {
+  INTEGER
+  FLOAT
+  BOOLEAN
+  STRING
+}
+
+model Datastream {
+  id             String           @id @default(uuid())
+  deviceId       String
+  virtualPin     String
+  name           String
+  dataType       DataType
+  unit           String?
+  minValue       Float?
+  maxValue       Float?
+  description    String?
+  createdAt      DateTime         @default(now())
+  updatedAt      DateTime         @updatedAt
+  device         Device           @relation(fields: [deviceId], references: [id], onDelete: Cascade)
+  sensorData     SensorData[]
+  widgets        Widget[]
+  conditionRules AutomationRule[] @relation("RuleConditionDatastream")
+  actionRules    AutomationRule[] @relation("RuleActionDatastream")
+
+  @@unique([deviceId, virtualPin])
+  @@index([deviceId])
+  @@map("datastreams")
+}
+
+model SensorData {
+  id           String     @id @default(uuid())
+  deviceId     String
+  datastreamId String
+  value        String
+  numericValue Float?
+  timestamp    DateTime   @default(now())
+  device       Device     @relation(fields: [deviceId], references: [id], onDelete: Cascade)
+  datastream   Datastream @relation(fields: [datastreamId], references: [id], onDelete: Cascade)
+
+  @@index([deviceId, timestamp])
+  @@index([datastreamId, timestamp])
+  @@map("sensor_data")
+}
+
+enum WidgetType {
+  VALUE_CARD
+  GAUGE
+  LIVE_CHART
+  SWITCH
+}
+
+model Widget {
+  id           String     @id @default(uuid())
+  deviceId     String
+  datastreamId String
+  type         WidgetType
+  x            Int
+  y            Int
+  w            Int
+  h            Int
+  title        String
+  createdAt    DateTime   @default(now())
+  updatedAt    DateTime   @updatedAt
+  device       Device     @relation(fields: [deviceId], references: [id], onDelete: Cascade)
+  datastream   Datastream @relation(fields: [datastreamId], references: [id], onDelete: Cascade)
+
+  @@index([deviceId])
+  @@index([datastreamId])
+  @@map("widgets")
+}
+
+model AutomationRule {
+  id                    String     @id @default(uuid())
+  deviceId              String
+  name                  String
+  conditionDatastreamId String
+  operator              String     // '>', '<', '==', '!=', '>=', '<='
+  conditionValue        Float
+  actionDatastreamId    String
+  actionValue           String     // 'true', 'false', '1', '0'
+  isActive              Boolean    @default(true)
+  createdAt             DateTime   @default(now())
+  updatedAt             DateTime   @updatedAt
+  device                Device     @relation(fields: [deviceId], references: [id], onDelete: Cascade)
+  conditionDatastream   Datastream @relation("RuleConditionDatastream", fields: [conditionDatastreamId], references: [id], onDelete: Cascade)
+  actionDatastream      Datastream @relation("RuleActionDatastream", fields: [actionDatastreamId], references: [id], onDelete: Cascade)
+
+  @@index([deviceId])
+  @@index([conditionDatastreamId])
+  @@index([actionDatastreamId])
+  @@map("automation_rules")
+}
+
+enum NotificationType {
+  OFFLINE
+  AUTOMATION_TRIGGERED
+  SYSTEM
+}
+
+model Notification {
+  id        String           @id @default(uuid())
+  deviceId  String
+  type      NotificationType
+  message   String
+  isRead    Boolean          @default(false)
+  createdAt DateTime         @default(now())
+  device    Device           @relation(fields: [deviceId], references: [id], onDelete: Cascade)
+
+  @@index([deviceId, createdAt])
+  @@map("notifications")
+}
+
