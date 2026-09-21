@@ -1,6 +1,9 @@
-import { prisma, createNotification, checkHasRecentOfflineNotification } from '../db.ts';
+import { prisma, createNotification, checkHasRecentOfflineNotification, acquireAdvisoryLock } from '../db.ts';
 import { computeDeviceStatus } from './iotService.ts';
 import { emitNotificationToUser } from '../sockets/socketManager.ts';
+
+// Process-local guard to prevent concurrent overlapping processing for the same device
+const processingOfflineDevices = new Set<string>();
 
 export function startOfflineMonitor(intervalMs = 60000): NodeJS.Timeout {
   console.log('[OFFLINE-MONITOR] Started heartbeat monitoring service...');
@@ -23,16 +26,30 @@ export function startOfflineMonitor(intervalMs = 60000): NodeJS.Timeout {
         const lastSeenIso = dev.lastSeen ? dev.lastSeen.toISOString() : null;
         const { status } = computeDeviceStatus(lastSeenIso);
         if (status === 'OFFLINE') {
-          // Check if we already sent an OFFLINE notification within the last 60 minutes
-          const hasRecentNotif = await checkHasRecentOfflineNotification(dev.id, 60);
-          if (!hasRecentNotif) {
-            const lastSeenFormatted = dev.lastSeen ? new Date(dev.lastSeen).toLocaleString('id-ID') : 'Belum pernah online';
-            const message = `Perangkat '${dev.name}' (${dev.deviceIdentifier}) TERPUTUS (OFFLINE). Terakhir aktif: ${lastSeenFormatted}`;
+          if (processingOfflineDevices.has(dev.id)) {
+            continue;
+          }
+          processingOfflineDevices.add(dev.id);
 
-            const notif = await createNotification(dev.id, 'OFFLINE', message);
-            emitNotificationToUser(dev.project.userId, dev.id, notif);
+          try {
+            await prisma.$transaction(async (tx) => {
+              // Acquire PostgreSQL transaction-scoped advisory lock for this device across instances
+              await acquireAdvisoryLock(tx, dev.id);
 
-            console.log(`[OFFLINE-MONITOR] Device ${dev.deviceIdentifier} marked OFFLINE. Notification sent.`);
+              // Check if we already sent an OFFLINE notification within the last 60 minutes
+              const hasRecentNotif = await checkHasRecentOfflineNotification(dev.id, 60, tx);
+              if (!hasRecentNotif) {
+                const lastSeenFormatted = dev.lastSeen ? new Date(dev.lastSeen).toLocaleString('id-ID') : 'Belum pernah online';
+                const message = `Perangkat '${dev.name}' (${dev.deviceIdentifier}) TERPUTUS (OFFLINE). Terakhir aktif: ${lastSeenFormatted}`;
+
+                const notif = await createNotification(dev.id, 'OFFLINE', message, tx);
+                emitNotificationToUser(dev.project.userId, dev.id, notif);
+
+                console.log(`[OFFLINE-MONITOR] Device ${dev.deviceIdentifier} marked OFFLINE. Notification sent.`);
+              }
+            });
+          } finally {
+            processingOfflineDevices.delete(dev.id);
           }
         }
       }

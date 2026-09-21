@@ -1,7 +1,9 @@
 import crypto from 'node:crypto';
 import { PrismaClient } from '@prisma/client';
 
-const prisma = new PrismaClient();
+const prisma = new PrismaClient({
+  datasourceUrl: 'postgresql://postgres:postgres@127.0.0.1:5432/esp32_iot_monitor?pgbouncer=true',
+});
 const BASE_URL = 'http://127.0.0.1:3000';
 
 async function runAudit() {

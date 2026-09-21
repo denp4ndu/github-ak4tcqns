@@ -12,19 +12,29 @@ import datastreamRoutes from './src/backend/routes/datastreams.ts';
 import deviceApiRoutes from './src/backend/routes/deviceApi.ts';
 import dataRoutes from './src/backend/routes/data.ts';
 import notificationRoutes from './src/backend/routes/notifications.ts';
+import batchRoutes from './src/backend/routes/batches.ts';
+import batchItemRoutes from './src/backend/routes/batchItems.ts';
 
 // WebSocket manager
-import { initWebSocket } from './src/backend/sockets/socketManager.ts';
+import { initWebSocket, redisReady, distributedRealtimeReady, connectionState } from './src/backend/sockets/socketManager.ts';
 
 // PostgreSQL and Prisma initialization
 import { startPostgresServer } from './src/backend/pgServer.ts';
 import { prisma, initDatabaseSchema } from './src/backend/db.ts';
 import { startOfflineMonitor } from './src/backend/services/offlineMonitor.ts';
+import { rehydrateScheduledBatches, recoverOrphanedBatches } from './src/backend/services/batchExecutionService.ts';
 
 async function startServer() {
   const app = express();
   const server = http.createServer(app);
-  const PORT = 3000;
+  const rawPort = process.env.PORT ? process.env.PORT.trim() : '';
+  const parsedPort = /^\d+$/.test(rawPort) ? parseInt(rawPort, 10) : NaN;
+  const PORT =
+    !isNaN(parsedPort) &&
+    parsedPort > 0 &&
+    parsedPort < 65536
+      ? parsedPort
+      : 3000;
 
   // Initialize Socket.IO with JWT Authentication and Room isolation
   const io = initWebSocket(server);
@@ -39,6 +49,8 @@ async function startServer() {
     console.log('[POSTGRES] Connected to PostgreSQL via Prisma Client successfully.');
     await initDatabaseSchema();
     startOfflineMonitor(60000);
+    await rehydrateScheduledBatches().catch((err) => console.error('[BATCH-RECOVERY] Error rehydrating scheduled batches:', err));
+    await recoverOrphanedBatches().catch((err) => console.error('[BATCH-RECOVERY] Error recovering orphaned batches:', err));
   } catch (dbErr) {
     console.error('[FATAL] Failed to connect to PostgreSQL via Prisma:', dbErr);
     process.exit(1);
@@ -67,14 +79,25 @@ async function startServer() {
   app.get('/api/health', async (_req, res) => {
     try {
       await prisma.$queryRaw`SELECT 1`;
-      res.json({
-        status: 'ok',
+      const isHealthy = distributedRealtimeReady;
+      
+      const healthData = {
+        status: isHealthy ? 'ok' : 'degraded',
         database: 'PostgreSQL + Prisma ORM',
         websocket: 'Socket.IO (Authenticated Rooms)',
+        redis: redisReady ? 'connected' : 'unconnected',
+        distributedRealtime: distributedRealtimeReady ? 'ready' : 'unavailable',
+        connectionState: connectionState,
         service: 'ESP32 IoT Monitor Backend',
         phase: 2,
         time: new Date().toISOString(),
-      });
+      };
+
+      if (!isHealthy) {
+        res.status(503).json(healthData);
+      } else {
+        res.json(healthData);
+      }
     } catch (err) {
       res.status(500).json({
         status: 'error',
@@ -94,6 +117,8 @@ async function startServer() {
   app.use('/api/device', deviceApiRoutes);
   app.use('/api/notifications', notificationRoutes);
   app.use('/api', dataRoutes);
+  app.use('/api/batches', batchRoutes);
+  app.use('/api/batches', batchItemRoutes);
 
   // Global API 404 handler
   app.all('/api/*', (req, res) => {

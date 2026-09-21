@@ -57,13 +57,16 @@ export const DashboardPage: React.FC<DashboardPageProps> = ({
 
   // Load layout from PostgreSQL whenever device changes
   const loadLayout = useCallback(async (deviceId: string) => {
+    console.log(`[UI] DashboardPage loadLayout called for device: ${deviceId}`);
     setIsLoadingLayout(true);
     setSaveFeedback(null);
     try {
       const res = await api.getDashboardLayout(deviceId);
+      console.log(`[UI] DashboardPage loadLayout response for device: ${deviceId}, success: ${res.success}, widgets received: ${res.widgets?.length || 0}`);
       if (res.success) {
         setWidgets(res.widgets || []);
         setSavedWidgetsSnapshot(res.widgets || []);
+        console.log(`[UI] DashboardPage state updated with ${res.widgets?.length || 0} widgets for device: ${deviceId}`);
       }
     } catch (err: any) {
       console.error('Failed to load dashboard layout:', err);
@@ -73,10 +76,12 @@ export const DashboardPage: React.FC<DashboardPageProps> = ({
   }, []);
 
   useEffect(() => {
+    console.log(`[UI] DashboardPage useEffect [device.id=${device?.id}] triggered, mounting/remounting`);
     setIsEditMode(false);
     if (device?.id) {
       loadLayout(device.id);
     } else {
+      console.log(`[UI] DashboardPage: No deviceId, clearing widgets`);
       setWidgets([]);
       setSavedWidgetsSnapshot([]);
     }

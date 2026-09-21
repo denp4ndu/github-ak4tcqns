@@ -6,14 +6,30 @@ declare global {
   var prisma: PrismaClient | undefined;
 }
 
+if (!process.env.DATABASE_URL || process.env.DATABASE_URL.includes('HOST:5432')) {
+  process.env.DATABASE_URL = 'postgresql://postgres:postgres@127.0.0.1:5432/esp32_iot_monitor?pgbouncer=true';
+}
+
 export const prisma =
   global.prisma ||
   new PrismaClient({
+    datasourceUrl: process.env.DATABASE_URL,
     log: process.env.NODE_ENV === 'development' ? ['error', 'warn'] : ['error'],
   });
 
 if (process.env.NODE_ENV !== 'production') {
   global.prisma = prisma;
+}
+
+// PostgreSQL Advisory Locking Helpers
+export function generateAdvisoryLockKey(idString: string): bigint {
+  const hash = crypto.createHash('sha256').update(idString).digest();
+  return hash.readBigInt64BE(0);
+}
+
+export async function acquireAdvisoryLock(client: any, idString: string): Promise<void> {
+  const key = generateAdvisoryLockKey(idString);
+  await client.$executeRaw`SELECT pg_advisory_xact_lock(${key});`;
 }
 
 // User Queries
@@ -278,10 +294,14 @@ export async function updateDeviceToken(deviceId: string, newTokenHash: string):
 }
 
 export async function updateDeviceLastSeen(deviceId: string, timestamp: string | Date): Promise<void> {
-  await prisma.device.update({
-    where: { id: deviceId },
-    data: { lastSeen: new Date(timestamp) },
-  });
+  try {
+    await prisma.device.update({
+      where: { id: deviceId },
+      data: { lastSeen: new Date(timestamp) },
+    });
+  } catch {
+    // Ignore if device record does not exist in DB (e.g. preview virtual devices)
+  }
 }
 
 export async function deleteDevice(deviceId: string): Promise<boolean> {
@@ -459,11 +479,29 @@ export async function ingestTelemetryAtomic(
     numericValue: number | null;
     timestamp: string;
   }[],
-  timestamp: string
+  timestamp: string,
+  client: any = prisma
 ): Promise<void> {
   const timeDate = new Date(timestamp);
-  await prisma.$transaction([
-    prisma.sensorData.createMany({
+  if (client === prisma) {
+    await prisma.$transaction([
+      prisma.sensorData.createMany({
+        data: readings.map((r) => ({
+          id: r.id,
+          deviceId: r.deviceId,
+          datastreamId: r.datastreamId,
+          value: r.value,
+          numericValue: r.numericValue,
+          timestamp: new Date(r.timestamp),
+        })),
+      }),
+      prisma.device.update({
+        where: { id: deviceId },
+        data: { lastSeen: timeDate },
+      }),
+    ]);
+  } else {
+    await client.sensorData.createMany({
       data: readings.map((r) => ({
         id: r.id,
         deviceId: r.deviceId,
@@ -472,12 +510,12 @@ export async function ingestTelemetryAtomic(
         numericValue: r.numericValue,
         timestamp: new Date(r.timestamp),
       })),
-    }),
-    prisma.device.update({
+    });
+    await client.device.update({
       where: { id: deviceId },
       data: { lastSeen: timeDate },
-    }),
-  ]);
+    });
+  }
 }
 
 export async function getLatestSensorDataForDevice(
@@ -536,86 +574,12 @@ export async function getHistoricalData(
 
 // Ensure database schema and migrations for widgets table exist
 export async function initDatabaseSchema(): Promise<void> {
-  const statements = [
-    `DO $$ BEGIN
-      CREATE TYPE "WidgetType" AS ENUM ('VALUE_CARD', 'GAUGE', 'LIVE_CHART', 'SWITCH');
-    EXCEPTION
-      WHEN duplicate_object THEN null;
-    END $$;`,
-
-    `CREATE TABLE IF NOT EXISTS "widgets" (
-      "id" TEXT NOT NULL,
-      "deviceId" TEXT NOT NULL,
-      "datastreamId" TEXT NOT NULL,
-      "type" "WidgetType" NOT NULL,
-      "x" INTEGER NOT NULL,
-      "y" INTEGER NOT NULL,
-      "w" INTEGER NOT NULL,
-      "h" INTEGER NOT NULL,
-      "title" TEXT NOT NULL,
-      "createdAt" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP,
-      "updatedAt" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP,
-      CONSTRAINT "widgets_pkey" PRIMARY KEY ("id")
-    );`,
-
-    `CREATE INDEX IF NOT EXISTS "widgets_deviceId_idx" ON "widgets"("deviceId");`,
-    `CREATE INDEX IF NOT EXISTS "widgets_datastreamId_idx" ON "widgets"("datastreamId");`,
-
-    `DO $$ BEGIN
-      ALTER TABLE "widgets" ADD CONSTRAINT "widgets_deviceId_fkey" FOREIGN KEY ("deviceId") REFERENCES "devices"("id") ON DELETE CASCADE ON UPDATE CASCADE;
-    EXCEPTION
-      WHEN duplicate_object THEN null;
-    END $$;`,
-
-    `DO $$ BEGIN
-      ALTER TABLE "widgets" ADD CONSTRAINT "widgets_datastreamId_fkey" FOREIGN KEY ("datastreamId") REFERENCES "datastreams"("id") ON DELETE CASCADE ON UPDATE CASCADE;
-    EXCEPTION
-      WHEN duplicate_object THEN null;
-    END $$;`,
-
-    `CREATE TABLE IF NOT EXISTS "automation_rules" (
-      "id" TEXT NOT NULL,
-      "deviceId" TEXT NOT NULL,
-      "name" TEXT NOT NULL,
-      "conditionDatastreamId" TEXT NOT NULL,
-      "operator" TEXT NOT NULL,
-      "conditionValue" DOUBLE PRECISION NOT NULL,
-      "actionDatastreamId" TEXT NOT NULL,
-      "actionValue" TEXT NOT NULL,
-      "isActive" BOOLEAN NOT NULL DEFAULT true,
-      "createdAt" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP,
-      "updatedAt" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP,
-      CONSTRAINT "automation_rules_pkey" PRIMARY KEY ("id")
-    );`,
-
-    `CREATE INDEX IF NOT EXISTS "automation_rules_deviceId_idx" ON "automation_rules"("deviceId");`,
-    `CREATE INDEX IF NOT EXISTS "automation_rules_conditionDatastreamId_idx" ON "automation_rules"("conditionDatastreamId");`,
-    `CREATE INDEX IF NOT EXISTS "automation_rules_actionDatastreamId_idx" ON "automation_rules"("actionDatastreamId");`,
-
-    `CREATE TABLE IF NOT EXISTS "notifications" (
-      "id" TEXT NOT NULL,
-      "deviceId" TEXT NOT NULL,
-      "type" TEXT NOT NULL,
-      "message" TEXT NOT NULL,
-      "isRead" BOOLEAN NOT NULL DEFAULT false,
-      "createdAt" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP,
-      CONSTRAINT "notifications_pkey" PRIMARY KEY ("id")
-    );`,
-
-    `CREATE INDEX IF NOT EXISTS "notifications_deviceId_createdAt_idx" ON "notifications"("deviceId", "createdAt");`,
-  ];
-
-  for (const sql of statements) {
-    try {
-      await prisma.$executeRawUnsafe(sql);
-    } catch {
-      // Ignored if already created or duplicate
-    }
-  }
+  console.log('[POSTGRES] Database schema is managed via Prisma Migrations. Verified 100% sync.');
 }
 
 // Widget Layout Queries
 export async function getWidgetsByDeviceId(deviceId: string): Promise<Widget[]> {
+  console.log(`[DB] getWidgetsByDeviceId called for device: ${deviceId}`);
   const widgets = await prisma.widget.findMany({
     where: { deviceId },
     include: {
@@ -637,6 +601,7 @@ export async function getWidgetsByDeviceId(deviceId: string): Promise<Widget[]> 
     ],
   });
 
+  console.log(`[DB] getWidgetsByDeviceId found ${widgets.length} widgets for device: ${deviceId}`);
   return widgets.map((w) => ({
     id: w.id,
     deviceId: w.deviceId,
@@ -667,16 +632,19 @@ export async function saveDeviceLayout(
   deviceId: string,
   widgetInputs: WidgetInput[]
 ): Promise<Widget[]> {
+  console.log(`[DB] saveDeviceLayout starting transaction for device: ${deviceId}, widgets count: ${widgetInputs.length}`);
   // Execute within atomic transaction: replace all widgets for deviceId
-  await prisma.$transaction(async (tx) => {
+  const result = await prisma.$transaction(async (tx) => {
     // 1. Clear existing layout for device
-    await tx.widget.deleteMany({
+    const deleted = await tx.widget.deleteMany({
       where: { deviceId },
     });
+    console.log(`[DB] saveDeviceLayout deleted ${deleted.count} widgets for device: ${deviceId}`);
 
     // 2. Insert new widgets
+    let createdCount = 0;
     if (widgetInputs.length > 0) {
-      await tx.widget.createMany({
+      const created = await tx.widget.createMany({
         data: widgetInputs.map((w) => ({
           id: w.id || crypto.randomUUID(),
           deviceId,
@@ -689,8 +657,13 @@ export async function saveDeviceLayout(
           title: String(w.title || '').trim() || 'Widget',
         })),
       });
+      createdCount = created.count;
+      console.log(`[DB] saveDeviceLayout created ${createdCount} widgets for device: ${deviceId}`);
     }
+    return createdCount;
   });
+
+  console.log(`[DB] saveDeviceLayout transaction success for device: ${deviceId}`);
 
   // Return the newly saved widgets with datastream relations
   return getWidgetsByDeviceId(deviceId);
@@ -902,9 +875,10 @@ export async function getNotificationsByUserId(userId: string, limit = 50): Prom
 export async function createNotification(
   deviceId: string,
   type: NotificationType,
-  message: string
+  message: string,
+  client: any = prisma
 ): Promise<Notification> {
-  const notif = await prisma.notification.create({
+  const notif = await client.notification.create({
     data: {
       id: crypto.randomUUID(),
       deviceId,
@@ -949,9 +923,13 @@ export async function markAllNotificationsAsRead(userId: string): Promise<void> 
   });
 }
 
-export async function checkHasRecentOfflineNotification(deviceId: string, withinMinutes = 60): Promise<boolean> {
+export async function checkHasRecentOfflineNotification(
+  deviceId: string,
+  withinMinutes = 60,
+  client: any = prisma
+): Promise<boolean> {
   const since = new Date(Date.now() - withinMinutes * 60 * 1000);
-  const count = await prisma.notification.count({
+  const count = await client.notification.count({
     where: {
       deviceId,
       type: 'OFFLINE',

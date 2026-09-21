@@ -139,6 +139,7 @@ const AppContent: React.FC = () => {
                   ...stream,
                   currentValue: strVal,
                   numericValue: isNaN(numVal) ? null : numVal,
+                  lastUpdated: payload.timestamp,
                   lastUpdatedAt: payload.timestamp,
                 };
               }
@@ -185,6 +186,7 @@ const AppContent: React.FC = () => {
                 ...stream,
                 currentValue: strVal,
                 numericValue: isNaN(numVal) ? null : numVal,
+                lastUpdated: payload.timestamp,
                 lastUpdatedAt: payload.timestamp,
               };
             }

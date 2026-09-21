@@ -4,6 +4,11 @@ import { useAuth } from '../context/AuthContext.tsx';
 
 export interface SensorUpdatePayload {
   deviceId: string; // e.g. "ESP32-001" or deviceIdentifier
+  rawDeviceId?: string; // database UUID
+  datastreamId?: string; // datastream UUID
+  virtualPin?: string; // e.g. "V0"
+  value?: string | number | boolean;
+  numericValue?: number | null;
   timestamp: string; // ISO 8601 string
   data: Record<string, any>; // e.g. { V0: 67, V2: 1880 }
 }

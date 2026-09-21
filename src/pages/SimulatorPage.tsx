@@ -15,10 +15,12 @@ import {
   WifiOff,
   Power,
   RotateCcw,
+  Clock,
 } from 'lucide-react';
 import { io, Socket } from 'socket.io-client';
 import { api } from '../services/api.ts';
 import { useAuth } from '../context/AuthContext.tsx';
+import { simulatorSocketService } from '../services/simulatorSocketService.ts';
 import type { Device, Datastream } from '../types/index.ts';
 
 interface SimulatorPageProps {
@@ -53,24 +55,48 @@ export const SimulatorPage: React.FC<SimulatorPageProps> = ({
   const [serverResponse, setServerResponse] = useState<any>(null);
 
   // =========================================================
-  // Phase 3: Simulated ESP32 WebSocket Client
+  // Phase 3: Simulated ESP32 WebSocket Client (Persistent Singleton)
   // =========================================================
-  const [isWsClientConnected, setIsWsClientConnected] =
-    useState<boolean>(false);
-  const [simulatedRelayState, setSimulatedRelayState] =
-    useState<boolean>(false);
-  const [deviceLogs, setDeviceLogs] = useState<
-    Array<{
-      timestamp: string;
-      type: 'info' | 'cmd' | 'ack' | 'err';
-      text: string;
-    }>
-  >([]);
-  const simulatedSocketRef = useRef<Socket | null>(null);
+  const [isWsClientConnected, setIsWsClientConnected] = useState<boolean>(() =>
+    simulatorSocketService.getIsConnected()
+  );
+  const [simulatedRelayState, setSimulatedRelayState] = useState<boolean>(() =>
+    simulatorSocketService.getRelayState()
+  );
+  const [deviceLogs, setDeviceLogs] = useState(() =>
+    simulatorSocketService.getLogs()
+  );
+  const [isAckSuppressed, setIsAckSuppressed] = useState<boolean>(() =>
+    simulatorSocketService.isAckSuppressed()
+  );
+  const [isTelemetryActive, setIsTelemetryActive] = useState<boolean>(() =>
+    simulatorSocketService.isTelemetryRunning()
+  );
+  const [telemetryCount, setTelemetryCount] = useState<number>(() =>
+    simulatorSocketService.getTelemetryCount()
+  );
+
+  // Subscribe to persistent simulator service updates (persists across tab navigation!)
+  useEffect(() => {
+    const syncState = () => {
+      setIsWsClientConnected(simulatorSocketService.getIsConnected());
+      setSimulatedRelayState(simulatorSocketService.getRelayState());
+      setDeviceLogs(simulatorSocketService.getLogs());
+      setIsAckSuppressed(simulatorSocketService.isAckSuppressed());
+      setIsTelemetryActive(simulatorSocketService.isTelemetryRunning());
+      setTelemetryCount(simulatorSocketService.getTelemetryCount());
+    };
+
+    syncState();
+    const unsubscribe = simulatorSocketService.subscribe(syncState);
+    return () => {
+      // ONLY unsubscribe UI observer! DO NOT disconnect the simulator socket!
+      unsubscribe();
+    };
+  }, []);
 
   const addDeviceLog = (type: 'info' | 'cmd' | 'ack' | 'err', text: string) => {
-    const timestamp = new Date().toLocaleTimeString();
-    setDeviceLogs((prev) => [{ timestamp, type, text }, ...prev.slice(0, 49)]);
+    simulatorSocketService.addLog(type, text);
   };
 
   const connectSimulatedESP32 = () => {
@@ -78,154 +104,14 @@ export const SimulatorPage: React.FC<SimulatorPageProps> = ({
       alert('Please enter a valid Device Token to connect simulated ESP32.');
       return;
     }
-
-    // =========================================================
-    // STACKBLITZ PREVIEW MODE
-    // =========================================================
-    if (STACKBLITZ_PREVIEW) {
-      if (deviceToken.trim() !== 'preview-device-token') {
-        alert('Preview mode: gunakan Device Token preview-device-token.');
-        return;
-      }
-
-      setIsWsClientConnected(true);
-
-      addDeviceLog(
-        'info',
-        '[ESP32 WS PREVIEW] Simulated ESP32 connected locally.'
-      );
-
-      addDeviceLog(
-        'info',
-        '[ESP32 WS PREVIEW] device_ready handshake verified: ESP32-001'
-      );
-
-      return;
-    }
-
-    // =========================================================
-    // PRODUCTION MODE
-    // =========================================================
-    if (simulatedSocketRef.current) {
-      simulatedSocketRef.current.disconnect();
-    }
-
-    addDeviceLog(
-      'info',
-      `Connecting to WebSocket server with deviceToken: ${deviceToken.substring(
-        0,
-        14
-      )}...`
-    );
-
-    const socket = io({
-      auth: { deviceToken: deviceToken.trim() },
-      transports: ['websocket', 'polling'],
-      reconnection: true,
-    });
-
-    socket.on('connect', () => {
-      setIsWsClientConnected(true);
-      addDeviceLog(
-        'info',
-        `[ESP32 WS] Connected to backend! Socket ID: ${socket.id}`
-      );
-    });
-
-    socket.on('device_ready', (payload) => {
-      addDeviceLog(
-        'info',
-        `[ESP32 WS] device_ready handshake verified: ${payload.deviceIdentifier}`
-      );
-    });
-
-    socket.on(
-      'device_command',
-      (cmd: { virtualPin: string; value: any; commandId?: string }) => {
-        addDeviceLog(
-          'cmd',
-          `[RECV device_command] Pin: ${
-            cmd.virtualPin
-          } -> Value: ${JSON.stringify(cmd.value)}`
-        );
-
-        const isHigh =
-          cmd.value === true ||
-          cmd.value === 'true' ||
-          cmd.value === 1 ||
-          cmd.value === '1';
-
-        setSimulatedRelayState(isHigh);
-
-        addDeviceLog(
-          'info',
-          `[HARDWARE ACTION] Executed digitalWrite(27, ${
-            isHigh ? 'HIGH' : 'LOW'
-          }) on ESP32`
-        );
-
-        const ackPayload = {
-          deviceToken: deviceToken.trim(),
-          virtualPin: cmd.virtualPin,
-          value: isHigh,
-          status: 'SUCCESS',
-        };
-
-        socket.emit('command_ack', ackPayload);
-
-        addDeviceLog(
-          'ack',
-          `[SENT command_ack] -> Emitted ACK { virtualPin: "${cmd.virtualPin}", value: ${isHigh}, status: "SUCCESS" }`
-        );
-
-        onDataSent();
-      }
-    );
-
-    socket.on('connect_error', (err) => {
-      setIsWsClientConnected(false);
-      addDeviceLog('err', `[ESP32 WS] Connection error: ${err.message}`);
-    });
-
-    socket.on('disconnect', (reason) => {
-      setIsWsClientConnected(false);
-      addDeviceLog('info', `[ESP32 WS] Disconnected (Reason: ${reason})`);
-    });
-
-    simulatedSocketRef.current = socket;
+    simulatorSocketService.connect(deviceToken.trim());
   };
 
   const disconnectSimulatedESP32 = () => {
-    if (STACKBLITZ_PREVIEW) {
-      setIsWsClientConnected(false);
-      setSimulatedRelayState(false);
-
-      addDeviceLog(
-        'info',
-        '[ESP32 WS PREVIEW] Simulated ESP32 disconnected (Power Cut Simulation)'
-      );
-
-      return;
-    }
-
-    if (simulatedSocketRef.current) {
-      simulatedSocketRef.current.disconnect();
-      simulatedSocketRef.current = null;
-      setIsWsClientConnected(false);
-      addDeviceLog(
-        'info',
-        '[ESP32 WS] Manually disconnected simulated ESP32 (Power Cut Simulation)'
-      );
-    }
+    simulatorSocketService.disconnect(
+      'Manually disconnected simulated ESP32 (Power Cut Simulation)'
+    );
   };
-
-  useEffect(() => {
-    return () => {
-      if (simulatedSocketRef.current) {
-        simulatedSocketRef.current.disconnect();
-      }
-    };
-  }, []);
 
   // Automated acceptance test checklist results
   const [suiteResults, setSuiteResults] = useState<{
@@ -365,31 +251,38 @@ export const SimulatorPage: React.FC<SimulatorPageProps> = ({
       );
       let test2Passed = false;
       let test3Passed = false;
+      let capturedCommandId: string | undefined;
 
       // Listen for command on device socket
       deviceSocket.on('device_command', (cmd) => {
         if (cmd.virtualPin === 'V3' && cmd.value === true) {
           test2Passed = true; // Routed correctly to isolated device room!
           test3Passed = true; // Simulating physical execution
-          // Send ACK
+          capturedCommandId = cmd.commandId;
+          // Send ACK with correlated commandId
           deviceSocket.emit('command_ack', {
             deviceToken: deviceToken.trim(),
             virtualPin: 'V3',
             value: true,
             status: 'SUCCESS',
+            commandId: cmd.commandId,
           });
         }
       });
 
       // User socket sends command
       const userSocket = io({
-        auth: { token },
+        auth: { token: token || 'stackblitz-preview-token' },
         transports: ['websocket'],
       });
 
       let test4Passed = false;
       userSocket.on('state_updated', (ack) => {
-        if (ack.virtualPin === 'V3' && ack.status === 'SUCCESS') {
+        if (
+          ack.virtualPin === 'V3' &&
+          ack.status === 'SUCCESS' &&
+          (!capturedCommandId || ack.commandId === capturedCommandId)
+        ) {
           test4Passed = true;
         }
       });
@@ -429,18 +322,52 @@ export const SimulatorPage: React.FC<SimulatorPageProps> = ({
         results.test5 = false;
       }
 
-      // Clean up test sockets
-      deviceSocket.disconnect();
-      userSocket.disconnect();
-
       // ---------------------------------------------------------
       // TEST 6: Offline 5-Second Timeout Simulation
       // ---------------------------------------------------------
       addDeviceLog(
         'info',
-        '[SUITE] Executing TEST 6: Offline 5s Timeout Protection...'
+        '[SUITE] Executing TEST 6: Offline 5s Timeout Protection (device suppresses ACK)...'
       );
-      results.test6 = true; // Verified by client widget timeout timer logic (5000ms)
+
+      // Disable command_ack on deviceSocket so backend 5-second timer fires
+      deviceSocket.off('device_command');
+
+      let test6Passed = false;
+      const timeoutPromise = new Promise<boolean>((resolve) => {
+        const timeoutHandler = (ack: any) => {
+          if (ack.status === 'TIMEOUT' && ack.virtualPin === 'V3') {
+            userSocket.off('state_updated', timeoutHandler);
+            resolve(true);
+          }
+        };
+        userSocket.on('state_updated', timeoutHandler);
+        // Timeout guard at 6.5s
+        setTimeout(() => {
+          userSocket.off('state_updated', timeoutHandler);
+          resolve(false);
+        }, 6500);
+      });
+
+      userSocket.emit('send_command', {
+        deviceId: selectedDevice.id,
+        virtualPin: 'V3',
+        value: false,
+      });
+
+      test6Passed = await timeoutPromise;
+      results.test6 = test6Passed;
+
+      // Clean up test sockets
+      deviceSocket.disconnect();
+      userSocket.disconnect();
+
+      addDeviceLog(
+        'info',
+        `[SUITE] TEST 6 Result: ${
+          test6Passed ? 'PASSED (5s Timeout Triggered)' : 'FAILED'
+        }`
+      );
 
       setSuiteResults(results);
       addDeviceLog(
@@ -534,14 +461,56 @@ export const SimulatorPage: React.FC<SimulatorPageProps> = ({
                 <span>Connect Simulated ESP32</span>
               </button>
             ) : (
-              <button
-                id="sim-disconnect-ws-btn"
-                onClick={disconnectSimulatedESP32}
-                className="px-3.5 py-1.5 rounded-xl bg-rose-500/20 hover:bg-rose-500/30 text-rose-300 border border-rose-500/30 font-bold text-xs flex items-center gap-1.5 cursor-pointer"
-              >
-                <WifiOff className="w-3.5 h-3.5" />
-                <span>Disconnect (Simulate Power Cut)</span>
-              </button>
+              <div className="flex items-center gap-2">
+                {!isTelemetryActive ? (
+                  <button
+                    id="sim-start-telemetry-btn"
+                    onClick={() => simulatorSocketService.startTelemetryLoop(5000)}
+                    className="px-3.5 py-1.5 rounded-xl bg-sky-500 hover:bg-sky-400 text-slate-950 font-bold text-xs flex items-center gap-1.5 cursor-pointer shadow-sm shadow-sky-500/20"
+                    title="Emit periodic telemetry every 5s to backend via WebSocket"
+                  >
+                    <Play className="w-3.5 h-3.5 fill-current" />
+                    <span>Start Telemetry Loop (5s)</span>
+                  </button>
+                ) : (
+                  <button
+                    id="sim-stop-telemetry-btn"
+                    onClick={() => simulatorSocketService.stopTelemetryLoop('User clicked stop')}
+                    className="px-3.5 py-1.5 rounded-xl bg-amber-500/20 hover:bg-amber-500/30 text-amber-300 border border-amber-500/40 font-bold text-xs flex items-center gap-1.5 cursor-pointer"
+                  >
+                    <span className="w-2 h-2 rounded-full bg-emerald-400 animate-pulse" />
+                    <span>Stop Telemetry ({telemetryCount} sent)</span>
+                  </button>
+                )}
+                <button
+                  id="sim-suppress-ack-btn"
+                  onClick={() => {
+                    const next = simulatorSocketService.toggleAckSuppression();
+                    setIsAckSuppressed(next);
+                  }}
+                  className={`px-3.5 py-1.5 rounded-xl font-bold text-xs flex items-center gap-1.5 cursor-pointer border transition-colors ${
+                    isAckSuppressed
+                      ? 'bg-amber-500/20 text-amber-300 border-amber-500/40 shadow-sm shadow-amber-500/20'
+                      : 'bg-slate-800 hover:bg-slate-700 text-slate-300 border-slate-700'
+                  }`}
+                  title="Simulate ESP32 unresponsive hang — received commands will NOT be acknowledged, triggering the 5s timeout on dashboard"
+                >
+                  <Clock className="w-3.5 h-3.5" />
+                  <span>
+                    {isAckSuppressed
+                      ? 'ACK Suppressed (Hanging)'
+                      : 'Simulate Hang / Timeout'}
+                  </span>
+                </button>
+                <button
+                  id="sim-disconnect-ws-btn"
+                  onClick={disconnectSimulatedESP32}
+                  className="px-3.5 py-1.5 rounded-xl bg-rose-500/20 hover:bg-rose-500/30 text-rose-300 border border-rose-500/30 font-bold text-xs flex items-center gap-1.5 cursor-pointer"
+                >
+                  <WifiOff className="w-3.5 h-3.5" />
+                  <span>Disconnect (Simulate Power Cut)</span>
+                </button>
+              </div>
             )}
           </div>
         </div>

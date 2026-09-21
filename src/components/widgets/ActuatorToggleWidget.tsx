@@ -83,6 +83,12 @@ export const ActuatorToggleWidget: React.FC<ActuatorToggleWidgetProps> = ({
           noticeTimerRef.current = setTimeout(() => {
             setSuccessNotice(null);
           }, 3500);
+        } else if (payload.status === 'TIMEOUT') {
+          setErrorNotice('Device Timeout / Unreachable — ESP32 did not acknowledge within 5s');
+          if (noticeTimerRef.current) clearTimeout(noticeTimerRef.current);
+          noticeTimerRef.current = setTimeout(() => {
+            setErrorNotice(null);
+          }, 5000);
         } else {
           setErrorNotice('ESP32 reported hardware execution failure.');
           if (noticeTimerRef.current) clearTimeout(noticeTimerRef.current);
@@ -101,6 +107,15 @@ export const ActuatorToggleWidget: React.FC<ActuatorToggleWidgetProps> = ({
   // Handle Toggle Switch Click (Step 1 -> 5)
   const handleToggleClick = async () => {
     if (isPending) return;
+
+    if (isDeviceOffline) {
+      setErrorNotice('Device is OFFLINE. Commands cannot be transmitted.');
+      if (noticeTimerRef.current) clearTimeout(noticeTimerRef.current);
+      noticeTimerRef.current = setTimeout(() => {
+        setErrorNotice(null);
+      }, 5000);
+      return;
+    }
 
     const targetValue = !confirmedValue;
     setErrorNotice(null);

@@ -254,6 +254,7 @@ router.get('/:id/dashboard/layout', requireUserAuth, async (req: AuthRequest, re
   try {
     const userId = req.user!.id;
     const deviceId = req.params.id;
+    console.log(`[API] GET /devices/${deviceId}/dashboard/layout received for userId: ${userId}`);
 
     // Strict Authorization & IDOR protection
     const device = await getDeviceById(deviceId);
@@ -267,6 +268,7 @@ router.get('/:id/dashboard/layout', requireUserAuth, async (req: AuthRequest, re
     }
 
     const widgets = await getWidgetsByDeviceId(deviceId);
+    console.log(`[API] GET /devices/${deviceId}/dashboard/layout returning ${widgets.length} widgets`);
 
     res.status(200).json({
       success: true,
@@ -288,6 +290,7 @@ router.put('/:id/dashboard/layout', requireUserAuth, async (req: AuthRequest, re
   try {
     const userId = req.user!.id;
     const deviceId = req.params.id;
+    console.log(`[API] PUT /devices/${deviceId}/dashboard/layout received for userId: ${userId}`);
 
     // Strict Authorization & IDOR protection
     const device = await getDeviceById(deviceId);
@@ -315,6 +318,7 @@ router.put('/:id/dashboard/layout', requireUserAuth, async (req: AuthRequest, re
       });
       return;
     }
+    console.log(`[API] PUT /devices/${deviceId}/dashboard/layout received ${rawWidgets.length} raw widgets`);
 
     // Verify all datastreams belong to this device
     const deviceDatastreams = await getDatastreamsByDeviceId(deviceId);
@@ -362,8 +366,11 @@ router.put('/:id/dashboard/layout', requireUserAuth, async (req: AuthRequest, re
       });
     }
 
+    console.log(`[API] PUT /devices/${deviceId}/dashboard/layout validated ${cleanedWidgets.length} widgets`);
+
     // Atomically persist to PostgreSQL
     const savedWidgets = await saveDeviceLayout(deviceId, cleanedWidgets);
+    console.log(`[API] PUT /devices/${deviceId}/dashboard/layout successfully saved ${savedWidgets.length} widgets`);
 
     res.status(200).json({
       success: true,

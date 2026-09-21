@@ -441,7 +441,7 @@ export const api = {
 
           stream.numericValue = Number.isFinite(numericValue)
             ? numericValue
-            : null;
+            : 0;
 
           stream.currentValue = String(value);
         }
@@ -509,21 +509,25 @@ export const api = {
 
   // Phase 4: Dashboard Layout CRUD
   getDashboardLayout: async (deviceId: string) => {
+    console.log(`[API-SVC] getDashboardLayout called for device: ${deviceId}`);
     if (STACKBLITZ_PREVIEW) {
       return {
         success: true,
         deviceId,
-        widgets: [],
+        widgets: JSON.parse(localStorage.getItem(`preview_dashboard_layout_${deviceId}`) || '[]'),
       };
     }
 
-    return request<{
+    const res = await request<{
       success: boolean;
       deviceId: string;
       widgets: Widget[];
     }>(`/devices/${deviceId}/dashboard/layout`);
+    console.log(`[API-SVC] getDashboardLayout response for device: ${deviceId}, received ${res.widgets?.length || 0} widgets`);
+    return res;
   },
   saveDashboardLayout: async (deviceId: string, widgets: WidgetInput[]) => {
+    console.log(`[API-SVC] saveDashboardLayout called for device: ${deviceId}, widgets count: ${widgets.length}`);
     if (STACKBLITZ_PREVIEW) {
       localStorage.setItem(
         `preview_dashboard_layout_${deviceId}`,
@@ -538,7 +542,7 @@ export const api = {
       };
     }
 
-    return request<{
+    const res = await request<{
       success: boolean;
       message: string;
       deviceId: string;
@@ -547,6 +551,8 @@ export const api = {
       method: 'PUT',
       body: JSON.stringify({ widgets }),
     });
+    console.log(`[API-SVC] saveDashboardLayout response for device: ${deviceId}, success: ${res.success}`);
+    return res;
   },
 
   // Phase 5: Automation Rules

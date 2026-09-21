@@ -30,6 +30,7 @@ model Project {
   updatedAt   DateTime  @updatedAt
   user        User      @relation(fields: [userId], references: [id], onDelete: Cascade)
   devices     Device[]
+  batches     Batch[]
 
   @@index([userId])
   @@map("projects")
@@ -50,7 +51,9 @@ model Device {
   widgets          Widget[]
   automationRules  AutomationRule[]
   notifications    Notification[]
+  batchItems       BatchItem[]
 
+  @@unique([id, projectId])
   @@index([projectId])
   @@index([tokenHash])
   @@map("devices")
@@ -80,6 +83,7 @@ model Datastream {
   widgets        Widget[]
   conditionRules AutomationRule[] @relation("RuleConditionDatastream")
   actionRules    AutomationRule[] @relation("RuleActionDatastream")
+  batchItems     BatchItem[]
 
   @@unique([deviceId, virtualPin])
   @@index([deviceId])
@@ -168,4 +172,81 @@ model Notification {
   @@index([deviceId, createdAt])
   @@map("notifications")
 }
+
+enum BatchStatus {
+  DRAFT
+  SCHEDULED
+  IN_PROGRESS
+  PAUSED
+  COMPLETED
+  PARTIALLY_FAILED
+  FAILED
+  CANCELLED
+}
+
+enum BatchItemStatus {
+  PENDING
+  DISPATCHED
+  DELIVERED
+  EXECUTED
+  FAILED
+  EXPIRED
+  CANCELLED
+  SKIPPED
+}
+
+model Batch {
+  id          String      @id @default(uuid())
+  projectId   String
+  name        String
+  status      BatchStatus @default(DRAFT)
+  createdAt   DateTime    @default(now())
+  updatedAt   DateTime    @updatedAt
+  project     Project     @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  items       BatchItem[]
+
+  @@unique([id, projectId])
+  @@index([projectId])
+  @@map("batches")
+}
+
+model BatchItem {
+  id           String          @id @default(uuid())
+  batchId      String
+  projectId    String
+  deviceId     String
+  virtualPin   String
+  value        String
+  status       BatchItemStatus @default(PENDING)
+  waveIndex    Int             @default(0)
+  errorMessage String?
+  createdAt    DateTime        @default(now())
+  updatedAt    DateTime        @updatedAt
+
+  batch        Batch           @relation(fields: [batchId, projectId], references: [id, projectId], onDelete: Cascade)
+  device       Device          @relation(fields: [deviceId, projectId], references: [id, projectId], onDelete: Cascade)
+  datastream   Datastream      @relation(fields: [deviceId, virtualPin], references: [deviceId, virtualPin], onDelete: Cascade)
+
+  @@index([batchId, projectId])
+  @@index([deviceId, projectId])
+  @@index([deviceId, virtualPin])
+  @@map("batch_items")
+}
+
+model DeviceCommand {
+  id               String   @id @default(uuid())
+  deviceId         String
+  deviceIdentifier String
+  virtualPin       String
+  targetValue      String
+  userId           String
+  status           String   @default("PENDING") // PENDING, ACKED, TIMEOUT, FAILED
+  createdAt        DateTime @default(now())
+  updatedAt        DateTime @updatedAt
+
+  @@index([deviceId])
+  @@index([status])
+  @@map("device_commands")
+}
+
 
